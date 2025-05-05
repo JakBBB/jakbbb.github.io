@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, viewport-fit=cover">
+    <title>Fixed Bottom Border Layout - Consistent Scaling (Corrected)</title>
+    <style>
+        /* Base Styles */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { height: 100%; }
+        body {
+            position: relative;
+            min-height: 100%;
+            overflow-x: hidden;
+            background-color: #f0f0f0;
+        }
+
+        /* Fixed Elements */
+        .fixed-element {
+            position: fixed;
+            pointer-events: none;
+        }
+        #top-border {
+            top: 0; left: 0; width: 100%;
+            background-repeat: repeat-x;
+            z-index: 50;
+        }
+        .corner-image {
+            position: fixed;
+            bottom: 0;
+            z-index: 40;
+            /* --- CSS Constraints --- */
+            /* max-height will be set by JS from config */
+            height: auto; /* Maintain aspect ratio based on width */
+            width: auto;  /* Let image size naturally based on height/width constraints */
+            max-width: calc(50vw - 5px); /* Limit width, leave small gap (5px here, adjust CORNER_HORIZONTAL_GAP_PX in JS if needed) */
+            pointer-events: none;
+        }
+        .corner-image.left { left: 0; }
+        .corner-image.right { right: 0; }
+
+        #bottom-border {
+            bottom: 0; left: 0; width: 100%;
+            background-repeat: repeat-x;
+            z-index: 20; /* Below content/corners */
+            /* Height will be set by JS based on scale */
+        }
+
+        /* Scrolling Elements Container */
+        #scrolling-elements {
+            position: absolute;
+            top: 0; left: 0; width: 100%;
+            pointer-events: none;
+            z-index: 30;
+            overflow: hidden;
+        }
+        .scrolling-border-element {
+            position: absolute;
+            top: 0; height: 100%;
+            background-repeat: repeat-y;
+            z-index: 2;
+        }
+        #left-border { left: 0; }
+        #right-border { right: 0; transform: scaleX(-1); }
+
+        /* Ferns */
+        #fern-container {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            z-index: 1;
+        }
+        .fern {
+            position: absolute;
+            height: auto; /* Maintain aspect ratio */
+            /* width set by JS */
+        }
+        .fern.right { transform: scaleX(-1); } /* Flip horizontally */
+
+        /* Content Area */
+        #content {
+            position: relative;
+            z-index: 1;
+            background-color: #fff;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            margin: 0 auto;
+            max-width: 1200px;
+            min-height: 150vh;
+            /* Padding set by JS */
+        }
+        .content-block {
+            height: 300px; border: 1px dashed #ccc; margin-bottom: 20px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 1.5em; color: #aaa;
+        }
+        .content-block:last-child { margin-bottom: 0; }
+
+    </style>
+</head>
+<body>
+    <!-- HTML Structure (same as before) -->
+    <div id="top-border" class="fixed-element"></div>
+    <img id="corner-left" src="https://imgur.com/N5Mzh6F.png" class="corner-image left" alt="Left corner decoration" />
+    <img id="corner-right" src="https://imgur.com/TWlxLGK.png" class="corner-image right" alt="Right corner decoration" />
+    <div id="bottom-border" class="fixed-element"></div>
+    <div id="scrolling-elements">
+        <div id="left-border" class="scrolling-border-element"></div>
+        <div id="right-border" class="scrolling-border-element"></div>
+        <div id="fern-container"></div>
+    </div>
+    <div id="content">
+        <div class="content-block">Scroll Down...</div>
+        <div class="content-block">More Content</div>
+        <div class="content-block">Keep Scrolling</div>
+    </div>
+
+    <script>
+        // ==================================================================
+        // Configuration & URLs
+        // ==================================================================
+        const IMAGE_URLS = {
+            sideBorder: 'https://imgur.com/Z8yKPzL.png',
+            bottomBorder: 'https://imgur.com/NwXAbYX.png', // Still needed for scaling other elements
+            topBorder: 'https://imgur.com/K1gzOsG.png',
+            cornerLeft: 'https://imgur.com/N5Mzh6F.png',
+            cornerRight: 'https://imgur.com/TWlxLGK.png',
+            ferns: [
+                'https://imgur.com/oz27FGm.png', 'https://imgur.com/NWm51oL.png', 'https://imgur.com/5GjZpBn.png',
+                'https://imgur.com/sjD7Up8.png', 'https://imgur.com/lyepw5a.png', 'https://imgur.com/Y6I0J34.png',
+                'https://imgur.com/gz1gaHy.png'
+            ]
+        };
+
+        // --- Layout Configuration ---
+        const CORNER_MAX_HEIGHT_VH = 75;        // **** EDIT THIS **** Max height of corner images as % of viewport height
+        const CONTENT_MIN_BOTTOM_PADDING_PX = 40; // **** EDIT THIS **** Minimum bottom padding for content in pixels
+        const CORNER_HORIZONTAL_GAP_PX = 10;    // Total gap between corners (used in CSS calc: 5px = 10px / 2)
+
+        // --- Fern Configuration ---
+        const FERN_AVG_SPACING_Y = 140;
+        const FERN_SPACING_RANDOMNESS = 50;
+        const FERN_OFFSET_X = -14;
+
+        // --- General Configuration ---
+        const MIN_CONTENT_WIDTH = 50;
+        const INFINITE_SCROLL_THRESHOLD = 300;
+        const CONTENT_BLOCKS_PER_LOAD = 3;
+        const RESIZE_DEBOUNCE_MS = 150; // Debounce delay
+
+        // ==================================================================
+        // Element References (same as before)
+        // ==================================================================
+        const elements = {
+            body: document.body,
+            docElement: document.documentElement,
+            scrollingElementsContainer: document.getElementById('scrolling-elements'),
+            fernContainer: document.getElementById('fern-container'),
+            topBorder: document.getElementById('top-border'),
+            leftBorder: document.getElementById('left-border'),
+            rightBorder: document.getElementById('right-border'),
+            bottomBorder: document.getElementById('bottom-border'),
+            cornerLeft: document.getElementById('corner-left'),
+            cornerRight: document.getElementById('corner-right'),
+            content: document.getElementById('content')
+        };
+
+        // ==================================================================
+        // State Variables (same as before)
+        // ==================================================================
+        const imageStore = {};
+        let currentScale = 1;
+        let isLoadingContent = false;
+        let lastFernYLeft = 0;
+        let lastFernYRight = 0;
+
+        // ==================================================================
+        // Utility Functions (pseudoRandom, loadImage, getDocumentHeight, debounce - PREVIOUS WORKING VERSIONS)
+        // ==================================================================
+        function pseudoRandom(seed) { let x = Math.sin(seed) * 10000; return x - Math.floor(x); }
+        function loadImage(src) { return new Promise((resolve, reject) => { if (!src) return reject(new Error("Missing src")); const img = new Image(); img.onload = () => resolve(img); img.onerror = (err) => { console.error(`Failed to load image: ${src}`, err); reject(new Error(`Failed to load image: ${src}`)); }; img.src = src; }); }
+        function getDocumentHeight() { return Math.max( elements.body.scrollHeight, elements.docElement.scrollHeight, elements.body.offsetHeight, elements.docElement.offsetHeight, elements.body.clientHeight, elements.docElement.clientHeight ); }
+        function debounce(func, wait) { let timeout; return function executedFunction(...args) { const later = () => { clearTimeout(timeout); func(...args); }; clearTimeout(timeout); timeout = setTimeout(later, wait); }; }
+
+
+        // ==================================================================
+        // Image Loading (loadAllImages - PREVIOUS WORKING VERSION)
+        // ==================================================================
+        async function loadAllImages() {
+            console.log("Loading images...");
+            const promises = [];
+            Object.entries(IMAGE_URLS).forEach(([key, url]) => {
+                if (key !== 'ferns' && url) {
+                    promises.push(loadImage(url).then(img => {
+                        imageStore[key] = { img, w: img.naturalWidth, h: img.naturalHeight };
+                    }).catch(err => console.error(`Error loading ${key}:`, err)) );
+                }
+            });
+            if (IMAGE_URLS.ferns && IMAGE_URLS.ferns.length > 0) {
+                imageStore.ferns = [];
+                IMAGE_URLS.ferns.forEach((src, index) => {
+                    if (src) {
+                        promises.push(loadImage(src).then(img => {
+                            imageStore.ferns[index] = { img, w: img.naturalWidth, h: img.naturalHeight };
+                        }).catch(err => console.error(`Error loading fern ${index}:`, err)) );
+                    }
+                });
+            }
+            try {
+                await Promise.all(promises);
+                console.log("All required images loaded/attempted.");
+                // Verify essential images for scaling calculations
+                if (!imageStore.sideBorder?.w || !imageStore.topBorder?.h || !imageStore.bottomBorder?.h || !imageStore.cornerLeft?.w) {
+                    // Log warning but don't necessarily throw, allow potential fallback
+                    console.warn("Essential layout image dimensions missing! Layout might be incorrect.");
+                }
+            } catch (error) {
+                console.error("Error during image loading phase:", error);
+                // Consider throwing if critical images (like cornerLeft) fail, as scale calc depends on it
+                if (!imageStore.cornerLeft?.w) throw error;
+            }
+        }
+
+        // ==================================================================
+        // Layout Calculation and Application (Reverted to working logic + padding change)
+        // ==================================================================
+        function calculateScaleAndApplyLayout() {
+            // Basic check for essential data needed for scale calculation
+             if (!imageStore.cornerLeft?.w || !imageStore.sideBorder?.w || !imageStore.topBorder?.h || !imageStore.bottomBorder?.h) {
+                console.warn("Essential image dimensions not available, skipping layout calculation.");
+                return;
+            }
+
+            const viewportWidth = window.innerWidth;
+            // console.log(`Recalculating layout for viewport width: ${viewportWidth}px`);
+
+            // --- Determine Scale (Based on rendered left corner, respecting CSS constraints) ---
+            let cornerScale = 1.0;
+            const cornerElement = elements.cornerLeft;
+            const cornerNaturalWidth = imageStore.cornerLeft.w || 1;
+            const cornerActualWidth = cornerElement.offsetWidth || 0; // Read width AFTER CSS applied constraints
+
+            if (cornerNaturalWidth > 0 && cornerActualWidth > 0) {
+                cornerScale = cornerActualWidth / cornerNaturalWidth;
+            } else {
+                // This might happen briefly on load before rendering, use fallback
+                console.warn("Could not determine corner scale (offsetWidth likely 0). Using previous or default 1.0");
+                cornerScale = currentScale; // Use last known scale as fallback if possible
+            }
+
+            // Horizontal fit scale (same logic as before)
+            let horizontalFitScale = Infinity;
+            const naturalSideWidth = imageStore.sideBorder.w || 0;
+            const requiredNaturalWidthForSidesAndFerns = (naturalSideWidth + FERN_OFFSET_X) * 2;
+            const totalRequiredNaturalWidth = requiredNaturalWidthForSidesAndFerns + MIN_CONTENT_WIDTH;
+
+            if (totalRequiredNaturalWidth > 0) {
+                 if (viewportWidth <= MIN_CONTENT_WIDTH) {
+                     horizontalFitScale = 0.1;
+                 } else {
+                     horizontalFitScale = viewportWidth / totalRequiredNaturalWidth;
+                 }
+            } else {
+                 horizontalFitScale = 1.0; // Fallback
+            }
+
+            // Final Scale for borders/ferns: Use the smaller of the two scales
+            let finalScale = Math.min(cornerScale, horizontalFitScale);
+            finalScale = Math.max(0.01, finalScale); // Prevent scale from becoming zero or excessively tiny
+
+            currentScale = finalScale; // Store the calculated scale globally
+            // console.log(`Applied final scale: ${currentScale.toFixed(3)}`);
+
+
+            // --- Apply Scaled Styles ---
+            const topH = (imageStore.topBorder.h || 0) * currentScale;
+            const sideW = (imageStore.sideBorder.w || 0) * currentScale;
+            const sideH = (imageStore.sideBorder.h || 0) * currentScale;
+            const bottomH = (imageStore.bottomBorder.h || 0) * currentScale; // Bottom border IMAGE scales
+            const bottomW = (imageStore.bottomBorder.w || 0) * currentScale;
+
+            // Apply styles to borders (Top, Bottom, Left, Right) - same as before
+            elements.topBorder.style.height = `${topH}px`;
+            if (imageStore.topBorder.img) { elements.topBorder.style.backgroundImage = `url('${imageStore.topBorder.img.src}')`; elements.topBorder.style.backgroundSize = `${(imageStore.topBorder.w || 0) * currentScale}px ${topH}px`; }
+            elements.bottomBorder.style.height = `${bottomH}px`;
+             if (imageStore.bottomBorder.img) { elements.bottomBorder.style.backgroundImage = `url('${imageStore.bottomBorder.img.src}')`; elements.bottomBorder.style.backgroundSize = `${bottomW}px ${bottomH}px`; }
+            const sideBorderImageUrl = imageStore.sideBorder.img ? `url('${imageStore.sideBorder.img.src}')` : 'none';
+            const sideBackgroundSize = `${sideW}px ${sideH}px`;
+            elements.leftBorder.style.width = `${sideW}px`; elements.leftBorder.style.backgroundImage = sideBorderImageUrl; elements.leftBorder.style.backgroundSize = sideBackgroundSize;
+            elements.rightBorder.style.width = `${sideW}px`; elements.rightBorder.style.backgroundImage = sideBorderImageUrl; elements.rightBorder.style.backgroundSize = sideBackgroundSize;
+
+
+            // --- Content Padding ---
+            // Read actual rendered heights of the corner images (respecting CSS max-width and JS max-height)
+            const cornerLeftActualH = elements.cornerLeft.offsetHeight || 0;
+            const cornerRightActualH = elements.cornerRight.offsetHeight || 0;
+            const maxActualCornerH = Math.max(cornerLeftActualH, cornerRightActualH);
+
+            // **** MODIFIED PADDING LOGIC ****
+            // Bottom padding is the greater of the configured minimum OR the actual tallest corner height
+            const requiredPaddingBottom = Math.max(CONTENT_MIN_BOTTOM_PADDING_PX, maxActualCornerH);
+
+            // Horizontal padding (same as before)
+            const paddingHorizontal = sideW + (FERN_OFFSET_X * currentScale);
+
+            elements.content.style.paddingTop = `${topH}px`;
+            elements.content.style.paddingBottom = `${requiredPaddingBottom}px`;
+            elements.content.style.paddingLeft = `${paddingHorizontal}px`;
+            elements.content.style.paddingRight = `${paddingHorizontal}px`;
+            // console.log(`Content Padding: T=${topH.toFixed(0)}, B=${requiredPaddingBottom.toFixed(0)}, L/R=${paddingHorizontal.toFixed(0)}`);
+
+            // Update elements dependent on document height and scale
+            updateScrollingContainerHeight();
+            regenerateFerns(); // Ferns depend on scale and container height
+        }
+
+        // ==================================================================
+        // Scrolling Height & Ferns (updateScrollingContainerHeight, generateFerns, regenerateFerns - PREVIOUS WORKING VERSIONS)
+        // ==================================================================
+        function updateScrollingContainerHeight() { const docHeight = getDocumentHeight(); elements.scrollingElementsContainer.style.height = `${docHeight}px`; }
+        function regenerateFerns() { elements.fernContainer.innerHTML = ''; lastFernYLeft = 0; lastFernYRight = 0; const currentContainerHeight = parseFloat(elements.scrollingElementsContainer.style.height || '0'); if (currentContainerHeight > 0) { generateFerns(currentContainerHeight); } }
+        function generateFerns(targetHeight) {
+            if (!imageStore.ferns || imageStore.ferns.length === 0 || !currentScale || currentScale <= 0 || !imageStore.sideBorder?.w) { return; }
+            const sideW = imageStore.sideBorder.w * currentScale;
+            const scaledOffsetX = FERN_OFFSET_X * currentScale;
+            const scaledAvgSpacingY = FERN_AVG_SPACING_Y * currentScale;
+            const scaledSpacingRandomness = FERN_SPACING_RANDOMNESS * currentScale;
+            const generateSide = (side, lastY, seedOffset) => {
+                let currentY = lastY; const newFerns = [];
+                while (currentY < targetHeight) {
+                    const randomFactor = pseudoRandom(currentY + seedOffset);
+                    const spacing = scaledAvgSpacingY + (randomFactor * 2 - 1) * scaledSpacingRandomness;
+                    const scaledSpacing = Math.max(10 * currentScale, spacing);
+                    const nextY = currentY + scaledSpacing;
+                    if (nextY >= targetHeight) break; currentY = nextY;
+                    const fernIndex = Math.floor(pseudoRandom(currentY * (1 + seedOffset * 0.1)) * imageStore.ferns.length);
+                    const fernData = imageStore.ferns[fernIndex];
+                    if (!fernData || !fernData.img || !fernData.w) continue;
+                    const fern = document.createElement('img'); fern.src = fernData.img.src; fern.classList.add('fern', side);
+                    fern.style.position = 'absolute'; fern.style.top = `${currentY}px`;
+                    const fernWidth = fernData.w * currentScale; fern.style.width = `${fernWidth}px`; fern.style.height = 'auto';
+                    if (side === 'left') { fern.style.left = `${sideW + scaledOffsetX}px`; }
+                    else { fern.style.right = `${sideW + scaledOffsetX}px`; /* Flip handled by CSS */ }
+                    newFerns.push(fern);
+                }
+                elements.fernContainer.append(...newFerns); return currentY;
+            };
+            lastFernYLeft = generateSide('left', lastFernYLeft, 1.0); lastFernYRight = generateSide('right', lastFernYRight, 1.5);
+        }
+
+        // ==================================================================
+        // Infinite Scroll (addMoreContent, handleScroll - PREVIOUS WORKING VERSIONS)
+        // ==================================================================
+        function addMoreContent() { if (isLoadingContent) return; isLoadingContent = true; const container = elements.content; const fragment = document.createDocumentFragment(); for (let i = 0; i < CONTENT_BLOCKS_PER_LOAD; i++) { const newBlock = document.createElement('div'); newBlock.classList.add('content-block'); const blockNumber = container.querySelectorAll('.content-block').length + 1; newBlock.textContent = `Content Block #${blockNumber}`; fragment.appendChild(newBlock); } container.appendChild(fragment); requestAnimationFrame(() => { const previousHeight = parseFloat(elements.scrollingElementsContainer.style.height || '0'); updateScrollingContainerHeight(); const newHeight = parseFloat(elements.scrollingElementsContainer.style.height); if (newHeight > previousHeight) { generateFerns(newHeight); } isLoadingContent = false; handleScroll(); }); }
+        function handleScroll() { if (isLoadingContent) return; const scrollPos = window.pageYOffset || document.documentElement.scrollTop; const windowHeight = window.innerHeight; const docHeight = getDocumentHeight(); if (windowHeight + scrollPos >= docHeight - INFINITE_SCROLL_THRESHOLD) { addMoreContent(); } }
+
+
+        // ==================================================================
+        // Initialization and Event Listeners
+        // ==================================================================
+        const handleResizeDebounced = debounce(() => {
+            console.log("--- Resize Event Triggered (Debounced) ---");
+            // Apply configured max-height before recalculating layout
+            applyCornerMaxHeight();
+            calculateScaleAndApplyLayout();
+        }, RESIZE_DEBOUNCE_MS);
+
+        // **** NEW FUNCTION **** to apply configured max-height
+        function applyCornerMaxHeight() {
+            const maxHeightValue = `${CORNER_MAX_HEIGHT_VH}vh`;
+            if (elements.cornerLeft) elements.cornerLeft.style.maxHeight = maxHeightValue;
+            if (elements.cornerRight) elements.cornerRight.style.maxHeight = maxHeightValue;
+             // console.log(`Applied max-height: ${maxHeightValue} to corners`);
+        }
+
+        async function init() {
+            console.log("Initializing page layout...");
+            try {
+                // 1. Load images
+                await loadAllImages();
+
+                // **** NEW STEP **** Apply initial max-height from config
+                applyCornerMaxHeight();
+
+                // 2. Perform initial layout calculation (reads offsetWidth affected by CSS/JS constraints)
+                calculateScaleAndApplyLayout();
+
+                // 3. Set up event listeners
+                window.addEventListener('resize', handleResizeDebounced);
+                window.addEventListener('scroll', handleScroll, { passive: true });
+
+                // 4. Initial check for infinite scroll
+                setTimeout(handleScroll, 100);
+
+                console.log("Initialization complete. Layout applied.");
+
+            } catch (err) {
+                console.error("Initialization failed:", err);
+                elements.body.innerHTML = '<p style="padding: 20px; text-align: center; color: red;">Failed to initialize page layout due to loading errors. Please try refreshing.</p>';
+            }
+        }
+
+        // Start initialization
+        init();
+
+    </script>
+</body>
+</html>
