@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <!-- Standard viewport, should be fine with fixed scaling -->
+    <meta name="viewport" content="width=device-width, viewport-fit=cover">
+    <title>Fixed Scale Layout - Simplified</title>
+    <style>
+        /* Base Styles */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { height: 100%; }
+        body {
+            position: relative; /* For absolute positioning of scrolling elements */
+            min-height: 100%;
+            overflow-x: hidden; /* Prevent horizontal scrollbars */
+            background-color: #f0f0f0; /* Fallback background */
+        }
+
+        /* Fixed Elements */
+        .fixed-element {
+            position: fixed;
+            pointer-events: none; /* Allow interaction with content underneath */
+        }
+        #top-border {
+            top: 0; left: 0; width: 100%;
+            background-repeat: repeat-x;
+            z-index: 50; /* Highest visual layer */
+            /* Height and background set by JS */
+        }
+        .corner-image {
+            position: fixed;
+            bottom: 0;
+            z-index: 40;
+            /* --- SIZE SET BY JS --- */
+            /* width/height applied via inline styles based on configured scale */
+            /* Remove CSS size constraints like max-width/max-height */
+            pointer-events: none;
+        }
+        .corner-image.left { left: 0; }
+        .corner-image.right { right: 0; }
+
+        #bottom-border {
+            bottom: 0; left: 0; width: 100%;
+            background-repeat: repeat-x;
+            z-index: 20;
+            /* Height and background set by JS */
+        }
+
+        /* Scrolling Elements */
+        #scrolling-elements {
+            position: absolute; /* Scrolls with body */
+            top: 0; left: 0; width: 100%;
+            pointer-events: none;
+            z-index: 30;
+            overflow: hidden; /* Clip ferns if needed */
+            /* Height set by JS */
+        }
+        .scrolling-border-element {
+            position: absolute;
+            top: 0; height: 100%;
+            background-repeat: repeat-y;
+            z-index: 2;
+            /* Width and background set by JS */
+        }
+        #left-border { left: 0; }
+        #right-border { right: 0; transform: scaleX(-1); }
+
+        /* Ferns */
+        #fern-container {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            z-index: 1;
+        }
+        .fern {
+            position: absolute;
+            height: auto; /* Maintain aspect ratio based on JS-set width */
+            /* Width set by JS scale */
+        }
+        .fern.right { transform: scaleX(-1); }
+
+        /* Content */
+        #content {
+            position: relative; z-index: 1;
+            background-color: #fff;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            margin: 0 auto; max-width: 1200px;
+            min-height: 150vh; /* Ensure scrolling for demo */
+            /* Padding set dynamically by JS */
+        }
+        .content-block {
+            height: 300px; border: 1px dashed #ccc; margin-bottom: 20px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 1.5em; color: #aaa;
+        }
+        .content-block:last-child { margin-bottom: 0; }
+
+    </style>
+</head>
+<body>
+    <!-- Fixed Elements -->
+    <div id="top-border" class="fixed-element"></div>
+    <img id="corner-left" src="https://imgur.com/N5Mzh6F.png" class="corner-image left" alt="Left corner decoration" />
+    <img id="corner-right" src="https://imgur.com/TWlxLGK.png" class="corner-image right" alt="Right corner decoration" />
+    <div id="bottom-border" class="fixed-element"></div>
+
+    <!-- Scrolling Elements -->
+    <div id="scrolling-elements">
+        <div id="left-border" class="scrolling-border-element"></div>
+        <div id="right-border" class="scrolling-border-element"></div>
+        <div id="fern-container"></div>
+    </div>
+
+    <!-- Content -->
+    <div id="content">
+        <div class="content-block">Scroll Down...</div>
+        <div class="content-block">More Content</div>
+        <div class="content-block">Keep Scrolling</div>
+    </div>
+
+    <script>
+        // ==================================================================
+        // Configuration
+        // ==================================================================
+        const IMAGE_URLS = {
+            sideBorder: 'https://imgur.com/Z8yKPzL.png', bottomBorder: 'https://imgur.com/NwXAbYX.png',
+            topBorder: 'https://imgur.com/K1gzOsG.png', cornerLeft: 'https://imgur.com/N5Mzh6F.png',
+            cornerRight: 'https://imgur.com/TWlxLGK.png',
+            ferns: [ 'https://imgur.com/oz27FGm.png', 'https://imgur.com/NWm51oL.png', 'https://imgur.com/5GjZpBn.png', 'https://imgur.com/sjD7Up8.png', 'https://imgur.com/lyepw5a.png', 'https://imgur.com/Y6I0J34.png', 'https://imgur.com/gz1gaHy.png' ]
+        };
+
+        // --- CORE SCALE CONFIGURATION ---
+        const IMAGE_DISPLAY_SCALE = 0.6; // 1.0 = 100% (1:1 pixel), 0.5 = 50%, etc.
+
+        // --- Fern Configuration ---
+        const FERN_AVG_SPACING_Y = 140; const FERN_SPACING_RANDOMNESS = 50; const FERN_OFFSET_X = -14;
+
+        // --- Demo Configuration ---
+        const INFINITE_SCROLL_THRESHOLD = 300; const CONTENT_BLOCKS_PER_LOAD = 3; const RESIZE_DEBOUNCE_MS = 150;
+
+        // ==================================================================
+        // Element References & State
+        // ==================================================================
+        const elements = { body: document.body, docElement: document.documentElement, scrollingElementsContainer: document.getElementById('scrolling-elements'), fernContainer: document.getElementById('fern-container'), topBorder: document.getElementById('top-border'), leftBorder: document.getElementById('left-border'), rightBorder: document.getElementById('right-border'), bottomBorder: document.getElementById('bottom-border'), cornerLeft: document.getElementById('corner-left'), cornerRight: document.getElementById('corner-right'), content: document.getElementById('content') };
+        const imageStore = {}; let isLoadingContent = false; let lastFernYLeft = 0; let lastFernYRight = 0;
+        // No need for 'currentScale' state variable, we use IMAGE_DISPLAY_SCALE directly
+
+        // ==================================================================
+        // Utility Functions
+        // ==================================================================
+        function pseudoRandom(seed) { let x = Math.sin(seed) * 10000; return x - Math.floor(x); }
+        function loadImage(src) { return new Promise((resolve, reject) => { if (!src) { return reject(new Error("loadImage: Image source URL is missing.")); } const img = new Image(); img.onload = () => resolve(img); img.onerror = (err) => { console.error(`Failed to load image: ${src}`, err); reject(new Error(`Failed to load image: ${src}`)); }; img.src = src; }); }
+        function getDocumentHeight() { return Math.max( elements.body.scrollHeight, elements.docElement.scrollHeight, elements.body.offsetHeight, elements.docElement.offsetHeight, elements.body.clientHeight, elements.docElement.clientHeight ); }
+        function debounce(func, wait) { let timeout; return function executedFunction(...args) { const later = () => { clearTimeout(timeout); func.apply(this, args); }; clearTimeout(timeout); timeout = setTimeout(later, wait); }; }
+
+        // ==================================================================
+        // Image Loading
+        // ==================================================================
+        async function loadAllImages() { console.log("Loading images..."); const promises = []; Object.entries(IMAGE_URLS).forEach(([key, url]) => { if (key !== 'ferns' && url) { promises.push(loadImage(url).then(img => { imageStore[key] = { img, w: img.naturalWidth, h: img.naturalHeight }; }).catch(err => console.error(`Error loading ${key}:`, err)) ); } }); if (IMAGE_URLS.ferns && Array.isArray(IMAGE_URLS.ferns)) { imageStore.ferns = []; IMAGE_URLS.ferns.forEach((src, index) => { if (src) { promises.push(loadImage(src).then(img => { imageStore.ferns[index] = { img, w: img.naturalWidth, h: img.naturalHeight }; }).catch(err => console.error(`Error loading fern ${index}:`, err)) ); } }); } try { await Promise.all(promises); console.log("All required images loaded or attempted."); if (!imageStore.sideBorder?.w || !imageStore.topBorder?.h || !imageStore.bottomBorder?.h || !imageStore.cornerLeft?.w || !imageStore.cornerRight?.w) { console.warn("Warning: Essential layout image dimensions missing!"); } } catch (error) { console.error("Error during image loading phase:", error); alert("Error loading page assets."); throw error; } }
+
+        // ==================================================================
+        // Layout Application (Simplified - Fixed Scale)
+        // ==================================================================
+        function applyFixedScaleLayout() {
+            // Ensure natural dimensions are available
+             if (!imageStore.cornerLeft?.w || !imageStore.cornerRight?.w || !imageStore.sideBorder?.w || !imageStore.topBorder?.h || !imageStore.bottomBorder?.h ) {
+                console.warn("applyFixedScaleLayout: Essential image dimensions not ready, skipping.");
+                return;
+            }
+            // Use the configured scale directly
+            const scale = IMAGE_DISPLAY_SCALE;
+
+            // --- Apply Fixed Size to Corner Images ---
+            const cornerLeftW = (imageStore.cornerLeft.w || 0) * scale;
+            const cornerLeftH = (imageStore.cornerLeft.h || 0) * scale;
+            const cornerRightW = (imageStore.cornerRight.w || 0) * scale;
+            const cornerRightH = (imageStore.cornerRight.h || 0) * scale;
+
+            elements.cornerLeft.style.width = `${Math.floor(cornerLeftW)}px`;
+            elements.cornerLeft.style.height = `${Math.floor(cornerLeftH)}px`;
+            elements.cornerRight.style.width = `${Math.floor(cornerRightW)}px`;
+            elements.cornerRight.style.height = `${Math.floor(cornerRightH)}px`;
+
+            // --- Apply Scaled Size to Borders (using the same fixed scale) ---
+            const topH = (imageStore.topBorder.h || 0) * scale;
+            const sideW = (imageStore.sideBorder.w || 0) * scale;
+            const sideH = (imageStore.sideBorder.h || 0) * scale;
+            const bottomH = (imageStore.bottomBorder.h || 0) * scale;
+            const bottomW = (imageStore.bottomBorder.w || 0) * scale;
+
+            elements.topBorder.style.height = `${topH}px`;
+            if (imageStore.topBorder.img) { elements.topBorder.style.backgroundImage = `url('${imageStore.topBorder.img.src}')`; elements.topBorder.style.backgroundSize = `${(imageStore.topBorder.w || 0) * scale}px ${topH}px`; }
+            elements.bottomBorder.style.height = `${bottomH}px`;
+            if (imageStore.bottomBorder.img) { elements.bottomBorder.style.backgroundImage = `url('${imageStore.bottomBorder.img.src}')`; elements.bottomBorder.style.backgroundSize = `${bottomW}px ${bottomH}px`; }
+            const sideBorderImageUrl = imageStore.sideBorder.img ? `url('${imageStore.sideBorder.img.src}')` : 'none';
+            const sideBackgroundSize = `${sideW}px ${sideH}px`;
+            elements.leftBorder.style.width = `${sideW}px`; elements.leftBorder.style.backgroundImage = sideBorderImageUrl; elements.leftBorder.style.backgroundSize = sideBackgroundSize;
+            elements.rightBorder.style.width = `${sideW}px`; elements.rightBorder.style.backgroundImage = sideBorderImageUrl; elements.rightBorder.style.backgroundSize = sideBackgroundSize;
+
+            // --- Apply Content Padding ---
+            const maxCornerH = Math.max(cornerLeftH, cornerRightH);
+            // No minimum padding constant needed here, just clear the fixed corners/borders
+            const requiredPaddingBottom = Math.max(bottomH, maxCornerH);
+            const paddingHorizontal = sideW + (FERN_OFFSET_X * scale); // Scale offset
+
+            elements.content.style.paddingTop = `${topH}px`;
+            elements.content.style.paddingBottom = `${requiredPaddingBottom}px`;
+            elements.content.style.paddingLeft = `${paddingHorizontal}px`;
+            elements.content.style.paddingRight = `${paddingHorizontal}px`;
+
+            // --- Update Scrolling Elements ---
+            // Needs to run after padding applied so document height is correct
+            requestAnimationFrame(() => {
+                updateScrollingContainerHeight();
+                regenerateFerns(); // Regenerate ferns based on new fixed scale
+            });
+        }
+
+        // ==================================================================
+        // Scrolling Height & Ferns (Fern generation uses fixed scale)
+        // ==================================================================
+        function updateScrollingContainerHeight() { const docHeight = getDocumentHeight(); elements.scrollingElementsContainer.style.height = `${docHeight}px`; }
+        function regenerateFerns() { elements.fernContainer.innerHTML = ''; lastFernYLeft = 0; lastFernYRight = 0; const currentContainerHeight = parseFloat(elements.scrollingElementsContainer.style.height || '0'); if (currentContainerHeight > 0) { generateFerns(currentContainerHeight); } }
+        function generateFerns(targetHeight) {
+             // Use the fixed configured scale
+            const scale = IMAGE_DISPLAY_SCALE;
+            if (!imageStore.ferns?.length || scale <= 0 || !imageStore.sideBorder?.w) { return; }
+
+            const sideW = imageStore.sideBorder.w * scale;
+            const scaledOffsetX = FERN_OFFSET_X * scale;
+            const scaledAvgSpacingY = FERN_AVG_SPACING_Y * scale;
+            const scaledSpacingRandomness = FERN_SPACING_RANDOMNESS * scale;
+
+            const generateSide = (side, lastY, seedOffset) => {
+                let currentY = lastY; const newFernsFragment = document.createDocumentFragment();
+                while (currentY < targetHeight) {
+                    const randomFactor = pseudoRandom(currentY + seedOffset);
+                    const spacing = scaledAvgSpacingY + (randomFactor * 2 - 1) * scaledSpacingRandomness;
+                    const scaledSpacing = Math.max(10 * scale, spacing); // Min spacing based on scale
+                    const nextY = currentY + scaledSpacing;
+                    if (nextY >= targetHeight) break; currentY = nextY;
+                    const fernIndex = Math.floor(pseudoRandom(currentY * (1 + seedOffset * 0.1)) * imageStore.ferns.length);
+                    const fernData = imageStore.ferns[fernIndex];
+                    if (!fernData?.img || !fernData?.w) continue;
+                    const fern = document.createElement('img'); fern.src = fernData.img.src; fern.classList.add('fern', side);
+                    fern.style.position = 'absolute'; fern.style.top = `${currentY}px`;
+                    const fernWidth = fernData.w * scale; // Scale fern width by fixed scale
+                    fern.style.width = `${fernWidth}px`; fern.style.height = 'auto';
+                    if (side === 'left') { fern.style.left = `${sideW + scaledOffsetX}px`; }
+                    else { fern.style.right = `${sideW + scaledOffsetX}px`; }
+                    newFernsFragment.appendChild(fern);
+                }
+                elements.fernContainer.appendChild(newFernsFragment); return currentY;
+            };
+            lastFernYLeft = generateSide('left', lastFernYLeft, 1.0);
+            lastFernYRight = generateSide('right', lastFernYRight, 1.5);
+        }
+
+        // ==================================================================
+        // Infinite Scroll (Demo)
+        // ==================================================================
+        function addMoreContent() { if (isLoadingContent) return; isLoadingContent = true; const container = elements.content; const fragment = document.createDocumentFragment(); for (let i = 0; i < CONTENT_BLOCKS_PER_LOAD; i++) { const newBlock = document.createElement('div'); newBlock.classList.add('content-block'); const blockNumber = container.querySelectorAll('.content-block').length + 1; newBlock.textContent = `Content Block #${blockNumber}`; fragment.appendChild(newBlock); } container.appendChild(fragment); requestAnimationFrame(() => { const previousHeight = parseFloat(elements.scrollingElementsContainer.style.height || '0'); updateScrollingContainerHeight(); const newHeight = parseFloat(elements.scrollingElementsContainer.style.height); if (newHeight > previousHeight) { generateFerns(newHeight); } isLoadingContent = false; handleScroll(); }); }
+        function handleScroll() { if (isLoadingContent) return; const scrollPos = window.pageYOffset || document.documentElement.scrollTop; const windowHeight = window.innerHeight; const docHeight = getDocumentHeight(); if (windowHeight + scrollPos >= docHeight - INFINITE_SCROLL_THRESHOLD) { addMoreContent(); } }
+
+        // ==================================================================
+        // Initialization and Event Listeners
+        // ==================================================================
+        // No need to apply max-height separately anymore
+
+        // Debounced handler simply reapplies the fixed layout
+        // Needed mainly if document height changes, affecting scrolling elements height & ferns
+        const handleResizeDebounced = debounce(() => {
+            // console.log("--- Resize/Orientation Event Triggered (Debounced) ---");
+             // Reapply layout - important for padding if scrollbars appear/disappear
+             // or if document height changes for ferns
+             applyFixedScaleLayout();
+            handleScroll(); // Check scroll position
+        }, RESIZE_DEBOUNCE_MS);
+
+        /** Initializes the page: loads images, applies initial fixed layout, sets listeners. */
+        async function init() {
+            console.log("Initializing page layout (Fixed Scale)...");
+            try {
+                await loadAllImages();
+                applyFixedScaleLayout(); // Apply the fixed scale layout
+                window.addEventListener('resize', handleResizeDebounced);
+                window.addEventListener('orientationchange', handleResizeDebounced); // Handle orientation too
+                window.addEventListener('scroll', handleScroll, { passive: true });
+                setTimeout(handleScroll, 100);
+                console.log("Initialization complete.");
+            } catch (err) {
+                console.error("Initialization failed:", err);
+                elements.body.innerHTML = '<p style="padding: 20px; text-align: center; color: red;">Failed to initialize page layout.</p>';
+            }
+        }
+        init();
+    </script>
+</body>
+</html>
