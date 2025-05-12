@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0, viewport-fit=cover">
+    <title>Layout - Banner Aspect Ratio Fix</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { height: 100%; }
+        body {
+            position: relative; min-height: 100%;
+            overflow-x: hidden; background-color: #f0f0f0;
+        }
+
+        /* Banner Area */
+        #top-scrolling-banner-container { text-align: center; position: relative; z-index: 5;}
+        #top-scrolling-banner {
+            display: inline-block;
+            max-width: 100%; /* Prevents overflow if scaled width is > viewport */
+            vertical-align: top;
+            /* width set by JS */
+            height: auto; /* Crucial for maintaining aspect ratio based on JS-set width */
+        }
+
+        /* Fixed Elements */
+        .fixed-element { position: fixed; pointer-events: none; }
+        #top-border { /* top dynamic via JS */ left: 0; width: 100%; background-repeat: repeat-x; z-index: 50; }
+        .corner-image { position: fixed; /* bottom dynamic via JS */ z-index: 40; height: auto; width: auto; max-width: calc(50vw - 5px); pointer-events: none; }
+        .corner-image.left { left: 0; }
+        .corner-image.right { right: 0; }
+        #bottom-border { position: fixed; /* bottom dynamic via JS */ left: 0; width: 100%; background-repeat: repeat-x; z-index: 20; }
+
+        /* Scrolling Elements & Content - same as before */
+        #main-area-wrapper { position: relative; }
+        #scrolling-elements { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 30; overflow: hidden; }
+        .scrolling-border-element { position: absolute; top: 0; height: 100%; background-repeat: repeat-y; z-index: 2; }
+        #left-border { left: 0; } #right-border { right: 0; transform: scaleX(-1); }
+        #fern-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; }
+        .fern { position: absolute; height: auto; } .fern.right { transform: scaleX(-1); }
+        #content { position: relative; z-index: 1; background-color: #fff; box-shadow: 0 0 10px rgba(0,0,0,0.1); margin: 0 auto; max-width: 1200px; min-height: 150vh; }
+        .content-block { height: 300px; border: 1px dashed #ccc; margin-bottom: 20px; display: flex; align-items: center; justify-content: center; font-size: 1.5em; color: #aaa; }
+        .content-block:last-child { margin-bottom: 0; }
+    </style>
+</head>
+<body>
+    <div id="top-scrolling-banner-container"><img id="top-scrolling-banner" src="https://imgur.com/i2BWaHn.png" alt="Top Banner"></div>
+    <div id="top-border" class="fixed-element"></div>
+    <img id="corner-left" src="https://imgur.com/N5Mzh6F.png" class="corner-image left" alt="Left corner decoration" />
+    <img id="corner-right" src="https://imgur.com/TWlxLGK.png" class="corner-image right" alt="Right corner decoration" />
+    <div id="bottom-border" class="fixed-element"></div>
+    <div id="main-area-wrapper">
+        <div id="scrolling-elements">
+            <div id="left-border" class="scrolling-border-element"></div>
+            <div id="right-border" class="scrolling-border-element"></div>
+            <div id="fern-container"></div>
+        </div>
+        <div id="content">
+            <div class="content-block">Scroll Down...</div>
+            <div class="content-block">More Content</div>
+            <div class="content-block">Keep Scrolling</div>
+        </div>
+    </div>
+
+    <script>
+        // ==================================================================
+        // Configuration & URLs
+        // ==================================================================
+        const IMAGE_URLS = { sideBorder: 'https://imgur.com/Z8yKPzL.png', bottomBorder: 'https://imgur.com/NwXAbYX.png', topBorder: 'https://imgur.com/K1gzOsG.png', cornerLeft: 'https://imgur.com/N5Mzh6F.png', cornerRight: 'https://imgur.com/TWlxLGK.png', topBanner: 'https://imgur.com/i2BWaHn.png', ferns: [ 'https://imgur.com/oz27FGm.png', 'https://imgur.com/NWm51oL.png', 'https://imgur.com/5GjZpBn.png', 'https://imgur.com/sjD7Up8.png', 'https://imgur.com/lyepw5a.png', 'https://imgur.com/Y6I0J34.png', 'https://imgur.com/gz1gaHy.png' ] };
+        const CORNER_MAX_HEIGHT_VH = 75;
+        const CONTENT_MIN_BOTTOM_PADDING_PX = 40;
+        const FERN_AVG_SPACING_Y = 140; const FERN_SPACING_RANDOMNESS = 50; const FERN_OFFSET_X = -14;
+        const MIN_CONTENT_WIDTH = 50; const INFINITE_SCROLL_THRESHOLD = 300; const CONTENT_BLOCKS_PER_LOAD = 3; const RESIZE_DEBOUNCE_MS = 200;
+
+        // ==================================================================
+        // Element References
+        // ==================================================================
+        const elements = { body: document.body, docElement: document.documentElement, mainAreaWrapper: document.getElementById('main-area-wrapper'), scrollingElementsContainer: document.getElementById('scrolling-elements'), fernContainer: document.getElementById('fern-container'), topBorder: document.getElementById('top-border'), leftBorder: document.getElementById('left-border'), rightBorder: document.getElementById('right-border'), bottomBorder: document.getElementById('bottom-border'), cornerLeft: document.getElementById('corner-left'), cornerRight: document.getElementById('corner-right'), content: document.getElementById('content'), topBannerContainer: document.getElementById('top-scrolling-banner-container'), topBanner: document.getElementById('top-scrolling-banner') };
+
+        // ==================================================================
+        // State Variables
+        // ==================================================================
+        const imageStore = {}; let currentScale = 1; let isLoadingContent = false; let lastFernYLeft = 0; let lastFernYRight = 0;
+        let bannerRenderedHeight = 0;
+        let fixedTopBorderRenderedHeight = 0;
+        let cornerLeftRenderedHeight = 0; let cornerRightRenderedHeight = 0; let bottomBorderRenderedHeight = 0;
+
+        // ==================================================================
+        // Utility Functions
+        // ==================================================================
+        function pseudoRandom(seed) { let x = Math.sin(seed) * 10000; return x - Math.floor(x); }
+        function loadImage(src) { return new Promise((resolve, reject) => { if (!src) { return reject(new Error("loadImage: Image source URL is missing.")); } const img = new Image(); img.onload = () => resolve(img); img.onerror = (err) => { console.error(`Failed to load image: ${src}`, err); reject(new Error(`Failed to load image: ${src}`)); }; img.src = src; }); }
+        function getDocumentHeight() { return Math.max( elements.body.scrollHeight, elements.docElement.scrollHeight, elements.body.offsetHeight, elements.docElement.offsetHeight, elements.body.clientHeight, elements.docElement.clientHeight ); }
+        function debounce(func, wait) { let timeout; return function executedFunction(...args) { const later = () => { clearTimeout(timeout); func.apply(this, args); }; clearTimeout(timeout); timeout = setTimeout(later, wait); }; }
+
+        // ==================================================================
+        // Image Loading
+        // ==================================================================
+        async function loadAllImages() { /* ... same ... */
+             console.log("Loading images..."); const promises = []; Object.entries(IMAGE_URLS).forEach(([key, url]) => { if (key !== 'ferns' && url) { promises.push(loadImage(url).then(img => { imageStore[key] = { img, w: img.naturalWidth, h: img.naturalHeight }; }).catch(err => console.error(`Error loading ${key}:`, err)) ); } }); if (IMAGE_URLS.ferns && Array.isArray(IMAGE_URLS.ferns)) { imageStore.ferns = []; IMAGE_URLS.ferns.forEach((src, index) => { if (src) { promises.push(loadImage(src).then(img => { imageStore.ferns[index] = { img, w: img.naturalWidth, h: img.naturalHeight }; }).catch(err => console.error(`Error loading fern ${index}:`, err)) ); } }); } try { await Promise.all(promises); console.log("All required images loaded or attempted."); if (!imageStore.sideBorder?.w || !imageStore.topBorder?.h || !imageStore.bottomBorder?.h || !imageStore.cornerLeft?.w || !imageStore.topBanner?.w) { console.warn("Warning: Essential layout image dimensions missing!"); } } catch (error) { console.error("Error during image loading phase:", error); alert("Error loading page assets."); throw error; }
+        }
+
+
+        // ==================================================================
+        // Layout Calculation and Application
+        // ==================================================================
+        function calculateScaleAndApplyLayout() {
+            if (!imageStore.cornerLeft?.w || !imageStore.sideBorder?.w || !imageStore.topBorder?.h || !imageStore.bottomBorder?.h || !imageStore.topBanner?.w) { console.warn("calculateScaleAndApplyLayout: Essential image dimensions not ready, skipping."); return; }
+            const viewportWidth = window.innerWidth;
+
+            // --- Determine Scale Factor ---
+            let cornerScale = 1.0; const cornerElement = elements.cornerLeft; const cornerNaturalWidth = imageStore.cornerLeft.w;
+            const cornerActualWidth = cornerElement.offsetWidth || 0;
+            if (cornerNaturalWidth > 0 && cornerActualWidth > 0) { cornerScale = cornerActualWidth / cornerNaturalWidth; }
+            else { console.warn("Could not determine corner scale from offsetWidth. Using fallback."); cornerScale = (currentScale > 0.01 && currentScale < 5) ? currentScale : 1.0; }
+            let horizontalFitScale = Infinity; const naturalSideWidth = imageStore.sideBorder.w; const requiredNaturalWidthForSidesAndFerns = (naturalSideWidth + FERN_OFFSET_X) * 2; const totalRequiredNaturalWidth = requiredNaturalWidthForSidesAndFerns + MIN_CONTENT_WIDTH;
+            if (totalRequiredNaturalWidth > 0) { if (viewportWidth <= MIN_CONTENT_WIDTH) { horizontalFitScale = 0.1; } else { horizontalFitScale = viewportWidth / totalRequiredNaturalWidth; } } else { horizontalFitScale = 1.0; }
+            let finalScale = Math.min(cornerScale, horizontalFitScale); finalScale = Math.max(0.01, finalScale);
+            currentScale = finalScale;
+
+            // --- Calculate Scaled Dimensions ---
+            fixedTopBorderRenderedHeight = (imageStore.topBorder.h || 0) * currentScale;
+            const sideW = (imageStore.sideBorder.w || 0) * currentScale;
+            bottomBorderRenderedHeight = (imageStore.bottomBorder.h || 0) * currentScale;
+            const bannerW = (imageStore.topBanner.w || 0) * currentScale;
+            // bannerRenderedHeight will be determined by browser after width is set due to height:auto
+
+            // --- Apply Styles ---
+            elements.topBorder.style.height = `${fixedTopBorderRenderedHeight}px`;
+            if (imageStore.topBorder.img) { elements.topBorder.style.backgroundImage = `url('${imageStore.topBorder.img.src}')`; elements.topBorder.style.backgroundSize = `${(imageStore.topBorder.w || 0) * currentScale}px ${fixedTopBorderRenderedHeight}px`; }
+
+            if (elements.topBanner) {
+                elements.topBanner.style.width = `${bannerW}px`;
+                elements.topBanner.style.height = 'auto'; // Ensure aspect ratio is maintained
+            }
+
+            // Defer reading banner height until after browser applies width and auto height
+            requestAnimationFrame(() => {
+                bannerRenderedHeight = elements.topBanner ? elements.topBanner.offsetHeight : 0;
+
+                // Now that bannerRenderedHeight is known, adjust fixed top border and wrapper padding
+                adjustFixedElementPositions(); // This depends on bannerRenderedHeight
+
+                if(elements.mainAreaWrapper) {
+                    elements.mainAreaWrapper.style.paddingTop = `${fixedTopBorderRenderedHeight}px`;
+                }
+
+                cornerLeftRenderedHeight = elements.cornerLeft.offsetHeight || 0;
+                cornerRightRenderedHeight = elements.cornerRight.offsetHeight || 0;
+                const maxActualCornerH = Math.max(cornerLeftRenderedHeight, cornerRightRenderedHeight);
+                const spaceNeededAtBottom = Math.max(maxActualCornerH, bottomBorderRenderedHeight);
+                const requiredWrapperPaddingBottom = Math.max(CONTENT_MIN_BOTTOM_PADDING_PX, spaceNeededAtBottom);
+
+                if(elements.mainAreaWrapper) {
+                    elements.mainAreaWrapper.style.paddingBottom = `${requiredWrapperPaddingBottom}px`;
+                }
+
+                const paddingHorizontal = sideW + (FERN_OFFSET_X * currentScale);
+                elements.content.style.paddingLeft = `${paddingHorizontal}px`;
+                elements.content.style.paddingRight = `${paddingHorizontal}px`;
+
+                regenerateFerns(); // Now safe to call, as all dimensions influencing it are set
+            });
+
+
+            elements.bottomBorder.style.height = `${bottomBorderRenderedHeight}px`;
+            if (imageStore.bottomBorder.img) { elements.bottomBorder.style.backgroundImage = `url('${imageStore.bottomBorder.img.src}')`; elements.bottomBorder.style.backgroundSize = `${(imageStore.bottomBorder.w || 0) * currentScale}px ${bottomBorderRenderedHeight}px`; }
+            const sideBorderImageUrl = imageStore.sideBorder.img ? `url('${imageStore.sideBorder.img.src}')` : 'none'; const sideBackgroundSize = `${(imageStore.sideBorder.w || 0) * currentScale}px ${(imageStore.sideBorder.h || 0) * currentScale}px`;
+            elements.leftBorder.style.width = `${sideW}px`; elements.leftBorder.style.backgroundImage = sideBorderImageUrl; elements.leftBorder.style.backgroundSize = sideBackgroundSize;
+            elements.rightBorder.style.width = `${sideW}px`; elements.rightBorder.style.backgroundImage = sideBorderImageUrl; elements.rightBorder.style.backgroundSize = sideBackgroundSize;
+
+            // elements.content.style.paddingTop and paddingBottom are handled in the rAF above
+        }
+
+        // ==================================================================
+        // Dynamic Fixed Element Positioning
+        // ==================================================================
+        function adjustFixedElementPositions() {
+            if (!elements.topBannerContainer || !elements.topBanner) return;
+            const scrollY = window.pageYOffset || document.documentElement.scrollTop;
+            // bannerRenderedHeight should be up-to-date when this is called from rAF
+            const bannerContainerBottomY = elements.topBannerContainer.offsetTop + bannerRenderedHeight;
+
+            if (elements.topBorder) {
+                if (scrollY >= bannerContainerBottomY) { elements.topBorder.style.top = '0px'; }
+                else { elements.topBorder.style.top = `${Math.max(0, bannerContainerBottomY - scrollY)}px`; }
+            }
+            const effectiveBottomOffset = Math.min(0, scrollY - bannerRenderedHeight);
+            if (elements.cornerLeft) elements.cornerLeft.style.bottom = `${effectiveBottomOffset}px`;
+            if (elements.cornerRight) elements.cornerRight.style.bottom = `${effectiveBottomOffset}px`;
+            if (elements.bottomBorder) elements.bottomBorder.style.bottom = `${effectiveBottomOffset}px`;
+        }
+
+        // ==================================================================
+        // Scrolling Height & Ferns
+        // ==================================================================
+        function regenerateFerns() { /* ... same ... */
+             elements.fernContainer.innerHTML = ''; lastFernYLeft = 0; lastFernYRight = 0; const containerHeight = elements.scrollingElementsContainer ? elements.scrollingElementsContainer.offsetHeight : 0; if (containerHeight > 0) { generateFerns(containerHeight); }
+        }
+        function generateFerns(targetHeight) { /* ... same ... */
+            if (!imageStore.ferns?.length || !currentScale || currentScale <= 0 || !imageStore.sideBorder?.w) { return; } const sideW = imageStore.sideBorder.w * currentScale; const scaledOffsetX = FERN_OFFSET_X * currentScale; const scaledAvgSpacingY = FERN_AVG_SPACING_Y * currentScale; const scaledSpacingRandomness = FERN_SPACING_RANDOMNESS * currentScale; const generateSide = (side, lastY, seedOffset) => { let currentY = lastY; const newFernsFragment = document.createDocumentFragment(); while (currentY < targetHeight) { const randomFactor = pseudoRandom(currentY + seedOffset); const spacing = scaledAvgSpacingY + (randomFactor * 2 - 1) * scaledSpacingRandomness; const scaledSpacing = Math.max(10 * currentScale, spacing); const nextY = currentY + scaledSpacing; if (nextY >= targetHeight) break; currentY = nextY; const fernIndex = Math.floor(pseudoRandom(currentY * (1 + seedOffset * 0.1)) * imageStore.ferns.length); const fernData = imageStore.ferns[fernIndex]; if (!fernData?.img || !fernData?.w) continue; const fern = document.createElement('img'); fern.src = fernData.img.src; fern.classList.add('fern', side); fern.style.position = 'absolute'; fern.style.top = `${currentY}px`; const fernWidth = fernData.w * currentScale; fern.style.width = `${fernWidth}px`; fern.style.height = 'auto'; if (side === 'left') { fern.style.left = `${sideW + scaledOffsetX}px`; } else { fern.style.right = `${sideW + scaledOffsetX}px`; } newFernsFragment.appendChild(fern); } elements.fernContainer.appendChild(newFernsFragment); return currentY; }; lastFernYLeft = generateSide('left', lastFernYLeft, 1.0); lastFernYRight = generateSide('right', lastFernYRight, 1.5);
+        }
+
+        // ==================================================================
+        // Infinite Scroll
+        // ==================================================================
+        function addMoreContent() { /* ... same ... */
+            if (isLoadingContent) return; isLoadingContent = true; const container = elements.content; const fragment = document.createDocumentFragment(); for (let i = 0; i < CONTENT_BLOCKS_PER_LOAD; i++) { const newBlock = document.createElement('div'); newBlock.classList.add('content-block'); const blockNumber = container.querySelectorAll('.content-block').length + 1; newBlock.textContent = `Content Block #${blockNumber}`; fragment.appendChild(newBlock); } container.appendChild(fragment); requestAnimationFrame(() => { regenerateFerns(); isLoadingContent = false; handleScroll(); });
+        }
+        function handleScroll() {
+            adjustFixedElementPositions();
+            if (isLoadingContent) return;
+            const scrollPos = window.pageYOffset || document.documentElement.scrollTop; const windowHeight = window.innerHeight; const docHeight = getDocumentHeight();
+            if (windowHeight + scrollPos >= docHeight - INFINITE_SCROLL_THRESHOLD) { addMoreContent(); }
+        }
+
+        // ==================================================================
+        // Initialization and Event Listeners
+        // ==================================================================
+        function applyConfiguredMaxHeight() { const maxHeightValue = `${CORNER_MAX_HEIGHT_VH}vh`; if (elements.cornerLeft) elements.cornerLeft.style.maxHeight = maxHeightValue; if (elements.cornerRight) elements.cornerRight.style.maxHeight = maxHeightValue; }
+        const handleResizeDebounced = debounce(() => { applyConfiguredMaxHeight(); calculateScaleAndApplyLayout(); }, RESIZE_DEBOUNCE_MS);
+        async function init() {
+            console.log("Initializing page layout: Banner Aspect Ratio Fix...");
+            try {
+                await loadAllImages();
+                applyConfiguredMaxHeight();
+                calculateScaleAndApplyLayout();
+                window.addEventListener('resize', handleResizeDebounced);
+                window.addEventListener('orientationchange', handleResizeDebounced);
+                window.addEventListener('scroll', handleScroll, { passive: true });
+                setTimeout(() => { handleScroll(); /* Ensure initial positions after load */ }, 100);
+                console.log("Initialization complete.");
+            } catch (err) {
+                console.error("Initialization failed:", err);
+                elements.body.innerHTML = '<p style="padding: 20px; text-align: center; color: red;">Failed to initialize page layout.</p>';
+            }
+        }
+        init();
+    </script>
+</body>
+</html>
